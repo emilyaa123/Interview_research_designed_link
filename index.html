@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Mock Interview Recorder</title>
+  <style>
+    body { font-family: Arial; text-align: center; background: #111; color: #fff; }
+    #video { margin-top: 20px; border: 4px solid red; border-radius: 8px; width: 480px; height: 360px; background: black; }
+    #rec-indicator { color: red; font-weight: bold; margin-top: 10px; font-size: 20px; }
+    #timer { font-size: 22px; margin-top: 5px; }
+    button { margin: 10px; padding: 10px 20px; font-size: 16px; border: none; border-radius: 6px; cursor: pointer; }
+    #startBtn { background: #28a745; color: white; }
+    #submitBtn { background: #007bff; color: white; }
+    #instructions { max-width: 650px; margin: 0 auto; font-size: 16px; line-height: 1.5; color: #ddd; }
+    #verificationCodeDisplay { font-size: 20px; font-weight: bold; margin-top: 30px; color: #0f0; }
+    #status { font-size: 20px; font-weight: bold; margin-top: 30px; color: #0f0; }
+  </style>
+</head>
+<body>
+  <h1>Mock Interview Recording</h1>
+  <p id="instructions">
+    Please position yourself in front of your camera. When you are ready, click <strong>Start Recording</strong> to begin.  
+    You will have <strong>3 minutes</strong> to complete your response.  
+    The <strong>Submit Recording</strong> button will become active only after the 3-minute period has ended.     
+    Once you finish, click Submit Recording to send your video for evaluation. 
+    A verification code will then appear —
+    <strong>please enter this code in the Qualtrics survey to confirm your submission to ensure you will receive payment for participation.</strong>
+  </p>
+
+  <video id="video" autoplay playsinline muted></video>
+  <div id="rec-indicator"></div>
+  <div id="timer"></div>
+  <div id="verificationCodeDisplay"></div>
+  <div id="status"></div>
+
+  <button id="startBtn">Start Recording</button>
+  <button id="submitBtn" disabled>Submit Recording</button>
+
+  <script>
+    const API_ENDPOINT = 'https://process-interview-audio-140599515961.asia-east1.run.app';
+    const Max_Recording_seconds = 180;
+
+    let mediaRecorder;
+    let recordedChunks = [];
+    let stream;
+    let countdownInterval;
+    let remainingSeconds = Max_Recording_seconds;
+
+    const video = document.getElementById('video');
+    const recIndicator = document.getElementById('rec-indicator');
+    const timerEl = document.getElementById('timer');
+    const statusEl = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const submitBtn = document.getElementById('submitBtn');
+    const urlParams = new URLSearchParams(window.location.search);
+    const PartCode = urlParams.get('code');
+    const rid = urlParams.get('rid');
+    const verificationCodeEl = document.getElementById('verificationCodeDisplay');
+
+    function formatTime(seconds) {
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return `${m}:${s.toString().padStart(2, '0')}`;
+    }
+
+    startBtn.addEventListener('click', async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        video.srcObject = stream;
+        
+        const audioStream = new MediaStream(stream.getAudioTracks());
+        const options = {mimeType: 'audio/webm'};
+        mediaRecorder = new MediaRecorder(audioStream, options);
+        recordedChunks = [];
+
+        mediaRecorder.ondataavailable = (e) => {
+          if (e.data.size > 0) recordedChunks.push(e.data);
+        };
+
+        mediaRecorder.onstart = () => {
+          recIndicator.textContent = "● Recording";
+          startBtn.disabled = true;
+          submitBtn.disabled = true;
+
+          remainingSeconds = Max_Recording_seconds;//这里
+          timerEl.textContent = `Time left: ${formatTime(remainingSeconds)}`;
+
+          countdownInterval = setInterval(() => {
+            remainingSeconds--;
+            timerEl.textContent = `Time left: ${formatTime(remainingSeconds)}`;
+            if (remainingSeconds <= 0) {
+              clearInterval(countdownInterval);
+              stopRecording();
+              submitBtn.disabled = false; 
+            }
+          }, 1000);
+        };
+
+        mediaRecorder.onstop = () => {
+          recIndicator.textContent = "";
+          clearInterval(countdownInterval);
+          timerEl.textContent = "Recording finished";
+        };
+
+        mediaRecorder.start();
+      } catch (err) {
+        console.error("Error accessing camera/microphone:", err);
+        statusEl.textContent = "Cannot access camera/microphone.";
+      }
+    });
+
+    function stopRecording() {
+      if (mediaRecorder && mediaRecorder.state === "recording") {
+        mediaRecorder.stop();
+        stream.getTracks().forEach(track => track.stop());
+      }
+    }
+
+    submitBtn.addEventListener('click', async () => {
+      // Disable all buttons
+      startBtn.disabled = true;
+      submitBtn.disabled = true;
+
+      // Hide video and timer
+      video.style.display = "none";
+      timerEl.style.display = "none";
+      recIndicator.style.display = "none";
+      document.getElementById('instructions').style.display = "none";
+
+      statusEl.textContent = "Your recording is uploading please wait.";
+      statusEl.style.color = "#ffc107";
+
+      //audio uploading process
+      const mimeType = mediaRecorder.mimeType || 'audio/webm';
+      const audioBlob = new Blob(recordedChunks, { type: mimeType });
+      const formData = new FormData();
+      const fileName = `${rid || 'No_Code'}.webm`;
+
+      formData.append('audioFile', audioBlob, fileName);
+      formData.append('rid', rid || 'N/A');
+
+      try {
+        const response = await fetch(API_ENDPOINT, {
+          method: 'POST',
+          body: formData
+        });
+
+        if (response.ok) {
+          statusEl.textContent = "Your recording has been uploaded successfully.";
+          statusEl.style.color = "#28a745";
+          if (PartCode) {
+            let codeSubstring = PartCode;
+            verificationCodeEl.innerHTML = `Your verification code is <strong>${codeSubstring}</strong>`;
+            // Show confirmation
+            statusEl.textContent = "Your recording has been submitted for evaluation. Thank you!";
+            statusEl.style.marginTop = "100px";
+          
+          } else {
+            verificationCodeEl.textContent = "Error: Could not get participant code.";
+          }
+
+        } else {
+          const errorText = await response.text();
+          throw new Error(`Server Error: ${response.status} - ${errorText}`);
+          statusEl.textContent = "Error: Failed to upload recording.";
+          statusEl.style.color = "#dc3545";
+        }
+      } catch (error) {
+        console.error("Error uploading recording:", error);
+        statusEl.textContent = "Error: Failed to upload recording. Please try again or contact the administrator.";
+        statusEl.style.color = "red";
+      }
+    });
+  </script>
+</body>
+</html>
